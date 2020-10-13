@@ -46,7 +46,6 @@ import org.apache.pinot.broker.queryquota.QueryQuotaManager;
 import org.apache.pinot.broker.routing.RoutingManager;
 import org.apache.pinot.broker.routing.RoutingTable;
 import org.apache.pinot.broker.routing.timeboundary.TimeBoundaryInfo;
-import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.exception.QueryException;
 import org.apache.pinot.common.function.AggregationFunctionType;
 import org.apache.pinot.common.metrics.BrokerMeter;
@@ -75,7 +74,6 @@ import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.common.utils.helix.TableCache;
 import org.apache.pinot.common.utils.request.RequestUtils;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunctionUtils;
-import org.apache.pinot.core.query.exception.BadQueryRequestException;
 import org.apache.pinot.core.query.reduce.BrokerReduceService;
 import org.apache.pinot.core.requesthandler.BrokerRequestOptimizer;
 import org.apache.pinot.core.requesthandler.PinotQueryParserFactory;
@@ -119,7 +117,6 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
   private final int _defaultHllLog2m;
   private final boolean _enableQueryLimitOverride;
   private final boolean _enableDistinctCountBitmapOverride;
-  private final boolean _enableFailQueryOnColumnMismatch;
 
   public BaseBrokerRequestHandler(PinotConfiguration config, RoutingManager routingManager,
       AccessControlFactory accessControlFactory, QueryQuotaManager queryQuotaManager, TableCache tableCache,
@@ -136,8 +133,6 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
     _enableQueryLimitOverride = _config.getProperty(Broker.CONFIG_OF_ENABLE_QUERY_LIMIT_OVERRIDE, false);
     _enableDistinctCountBitmapOverride =
         _config.getProperty(CommonConstants.Helix.ENABLE_DISTINCT_COUNT_BITMAP_OVERRIDE_KEY, false);
-    _enableFailQueryOnColumnMismatch =
-        _config.getProperty(Broker.CONFIG_OF_ENABLE_FAIL_QUERY_ON_COLUMN_MISMATCH, false);
 
     _brokerId = config.getProperty(Broker.CONFIG_OF_BROKER_ID, getDefaultBrokerId());
     _brokerTimeoutMs = config.getProperty(Broker.CONFIG_OF_BROKER_TIMEOUT_MS, Broker.DEFAULT_BROKER_TIMEOUT_MS);
@@ -208,9 +203,7 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
 
     updateTableName(brokerRequest);
     try {
-      updateColumnNames(brokerRequest, pinotQueryRequest.getQuery());
-    } catch(BadQueryRequestException be) {
-      return new BrokerResponseNative(QueryException.getException(QueryException.QUERY_PARSING_ERROR, be));
+      updateColumnNames(brokerRequest);
     } catch (Exception e) {
       LOGGER.warn("Caught exception while updating Column names in Query {}: {}, {}", requestId, query, e);
     }
@@ -744,7 +737,7 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
   /**
    * Fixes the column names to the actual column names in the given broker request.
    */
-  private void updateColumnNames(BrokerRequest brokerRequest, String query) {
+  private void updateColumnNames(BrokerRequest brokerRequest) {
     String rawTableName = TableNameBuilder.extractRawTableName(brokerRequest.getQuerySource().getTableName());
     Map<String, String> columnNameMap =
         _tableCache.isCaseInsensitive() ? _tableCache.getColumnNameMap(rawTableName) : null;
@@ -753,8 +746,7 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
       Collection<FilterQuery> values = brokerRequest.getFilterSubQueryMap().getFilterQueryMap().values();
       for (FilterQuery filterQuery : values) {
         if (filterQuery.getNestedFilterQueryIdsSize() == 0) {
-          filterQuery.setColumn(
-              fixColumnName(rawTableName, filterQuery.getColumn(), columnNameMap, query));
+          filterQuery.setColumn(fixColumnName(rawTableName, filterQuery.getColumn(), columnNameMap));
         }
       }
     }
@@ -767,19 +759,12 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
 
           if (functionName.equalsIgnoreCase(AggregationFunctionType.DISTINCT.getName())) {
             // For DISTINCT query, all arguments are expressions
-            arguments.replaceAll(e -> {
-              try {
-                return fixColumnName(rawTableName, e, columnNameMap, query);
-              } catch (Exception ex) {
-                Utils.rethrowException(ex);
-                throw new AssertionError("Should not reach this");
-              }
-            });
-          } else {:
+            arguments.replaceAll(e -> fixColumnName(rawTableName, e, columnNameMap));
+          } else {
             // For non-DISTINCT query, only the first argument is expression, others are literals
             // NOTE: We skip fixing the literal arguments because of the legacy behavior of PQL compiler treating string
             //       literal as identifier in the aggregation function.
-            arguments.set(0, fixColumnName(rawTableName, arguments.get(0), columnNameMap, query));
+            arguments.set(0, fixColumnName(rawTableName, arguments.get(0), columnNameMap));
           }
           info.setExpressions(arguments);
         }
@@ -787,8 +772,7 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
       if (brokerRequest.isSetGroupBy()) {
         List<String> expressions = brokerRequest.getGroupBy().getExpressions();
         for (int i = 0; i < expressions.size(); i++) {
-          expressions
-              .set(i, fixColumnName(rawTableName, expressions.get(i), columnNameMap, query));
+          expressions.set(i, fixColumnName(rawTableName, expressions.get(i), columnNameMap));
         }
       }
     } else {
@@ -797,7 +781,7 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
       for (int i = 0; i < selectionColumns.size(); i++) {
         String expression = selectionColumns.get(i);
         if (!expression.equals("*")) {
-          selectionColumns.set(i, fixColumnName(rawTableName, expression, columnNameMap, query));
+          selectionColumns.set(i, fixColumnName(rawTableName, expression, columnNameMap));
         }
       }
     }
@@ -805,75 +789,71 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
       List<SelectionSort> orderBy = brokerRequest.getOrderBy();
       for (SelectionSort selectionSort : orderBy) {
         String expression = selectionSort.getColumn();
-        selectionSort.setColumn(fixColumnName(rawTableName, expression, columnNameMap, query));
+        selectionSort.setColumn(fixColumnName(rawTableName, expression, columnNameMap));
       }
     }
 
     PinotQuery pinotQuery = brokerRequest.getPinotQuery();
     if (pinotQuery != null) {
       for (Expression expression : pinotQuery.getSelectList()) {
-        fixColumnName(rawTableName, expression, columnNameMap, query);
+        fixColumnName(rawTableName, expression, columnNameMap);
       }
       Expression filterExpression = pinotQuery.getFilterExpression();
       if (filterExpression != null) {
-        fixColumnName(rawTableName, filterExpression, columnNameMap, query);
+        fixColumnName(rawTableName, filterExpression, columnNameMap);
       }
       List<Expression> groupByList = pinotQuery.getGroupByList();
       if (groupByList != null) {
         for (Expression expression : groupByList) {
-          fixColumnName(rawTableName, expression, columnNameMap, query);
+          fixColumnName(rawTableName, expression, columnNameMap);
         }
       }
       List<Expression> orderByList = pinotQuery.getOrderByList();
       if (orderByList != null) {
         for (Expression expression : orderByList) {
-          fixColumnName(rawTableName, expression, columnNameMap, query);
+          fixColumnName(rawTableName, expression, columnNameMap);
         }
       }
       Expression havingExpression = pinotQuery.getHavingExpression();
       if (havingExpression != null) {
-        fixColumnName(rawTableName, havingExpression, columnNameMap, query);
+        fixColumnName(rawTableName, havingExpression, columnNameMap);
       }
     }
   }
 
-  private String fixColumnName(String rawTableName, String expression, @Nullable Map<String, String> columnNameMap,
-      String query) {
+  private String fixColumnName(String rawTableName, String expression, @Nullable Map<String, String> columnNameMap) {
     TransformExpressionTree expressionTree = TransformExpressionTree.compileToExpressionTree(expression);
-    fixColumnName(rawTableName, expressionTree, columnNameMap, query);
+    fixColumnName(rawTableName, expressionTree, columnNameMap);
     return expressionTree.toString();
   }
 
   private void fixColumnName(String rawTableName, TransformExpressionTree expression,
-      @Nullable Map<String, String> columnNameMap, String query) {
+      @Nullable Map<String, String> columnNameMap) {
     TransformExpressionTree.ExpressionType expressionType = expression.getExpressionType();
     if (expressionType == TransformExpressionTree.ExpressionType.IDENTIFIER) {
-      expression.setValue(
-          getActualColumnName(rawTableName, expression.getValue(), columnNameMap, query));
+      expression.setValue(getActualColumnName(rawTableName, expression.getValue(), columnNameMap));
     } else if (expressionType == TransformExpressionTree.ExpressionType.FUNCTION) {
       for (TransformExpressionTree child : expression.getChildren()) {
-        fixColumnName(rawTableName, child, columnNameMap, query);
+        fixColumnName(rawTableName, child, columnNameMap);
       }
     }
   }
 
-  private void fixColumnName(String rawTableName, Expression expression, @Nullable Map<String, String> columnNameMap,
-      String query) {
+  private void fixColumnName(String rawTableName, Expression expression, @Nullable Map<String, String> columnNameMap) {
     ExpressionType expressionType = expression.getType();
     if (expressionType == ExpressionType.IDENTIFIER) {
       if (!isStarIdentifier(expression)) {
         Identifier identifier = expression.getIdentifier();
-        identifier.setName(getActualColumnName(rawTableName, identifier.getName(), columnNameMap,
-            query));
+        identifier.setName(getActualColumnName(rawTableName, identifier.getName(), columnNameMap));
       }
     } else if (expressionType == ExpressionType.FUNCTION) {
       String operator = expression.getFunctionCall().getOperator();
       List<Expression> expressions = expression.getFunctionCall().getOperands();
       if ("AS".equals(operator)) {
-        fixColumnName(rawTableName, expressions.get(0), columnNameMap, query);
+        fixColumnName(rawTableName, expressions.get(0), columnNameMap);
       } else if (!isCountStarFromExpression(expression)) {
         for (Expression operand : expression.getFunctionCall().getOperands()) {
-          fixColumnName(rawTableName, operand, columnNameMap, query);
+          fixColumnName(rawTableName, operand, columnNameMap);
         }
       }
     }
@@ -889,8 +869,7 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
     return "*".equals(expression.getIdentifier().getName());
   }
 
-  private String getActualColumnName(String rawTableName, String columnName, Map<String, String> columnNameMap,
-      String query) {
+  private String getActualColumnName(String rawTableName, String columnName, Map<String, String> columnNameMap) {
     // Check if column is in the format of [table_name].[column_name]
     String[] splits = StringUtils.split(columnName, ".", 2);
     if (_tableCache.isCaseInsensitive()) {
@@ -903,10 +882,7 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
       String actualColumnName = columnNameMap.get(columnName.toLowerCase());
       if (actualColumnName != null) {
         return actualColumnName;
-      } else if (_enableFailQueryOnColumnMismatch) {
-        throw new BadQueryRequestException("Invalid column name: " + columnName + " in the query: " + query);
       } else {
-        LOGGER.warn("Invalid column name: {} in the query: {}", columnName, query);
         _brokerMetrics.addMeteredTableValue(rawTableName, BrokerMeter.QUERY_COLUMN_NAME_MISMATCH, 1L);
         return columnName;
       }
@@ -914,16 +890,10 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
       if (splits.length == 2 && rawTableName.equals(splits[0])) {
         columnName = splits[1];
       }
-      if (columnNameMap == null) {
-        return columnName;
-      }
-      if (!columnNameMap.containsKey(columnName) && _enableFailQueryOnColumnMismatch) {
-        throw new BadQueryRequestException("Invalid column name in the query: " + columnName);
-      } else {
-        LOGGER.warn("Invalid column name: {} in the query: {}", columnName, query);
+      if (columnNameMap != null && !columnNameMap.containsKey(columnName)) {
         _brokerMetrics.addMeteredTableValue(rawTableName, BrokerMeter.QUERY_COLUMN_NAME_MISMATCH, 1L);
-        return columnName;
       }
+      return columnName;
     }
   }
 
