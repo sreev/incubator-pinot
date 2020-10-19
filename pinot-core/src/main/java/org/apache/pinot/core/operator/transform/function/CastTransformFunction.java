@@ -30,7 +30,7 @@ import org.apache.pinot.core.operator.transform.transformer.datetime.SDFToSDFTra
 import org.apache.pinot.core.plan.DocIdSetPlanNode;
 
 
-public class CastTransformFunction extends BaseTransformFunction {
+  public class CastTransformFunction extends BaseTransformFunction {
   public static final String FUNCTION_NAME = "cast";
 
   private TransformFunction _transformFunction;

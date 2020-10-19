@@ -25,7 +25,8 @@ public enum ColumnIndexType {
   BLOOM_FILTER("bloom_filter"),
   NULLVALUE_VECTOR("nullvalue_vector"),
   TEXT_INDEX("text_index"),
-  RANGE_INDEX("range_index");
+  RANGE_INDEX("range_index"),
+  JSON_INDEX("json_index");
 
   private final String indexName;
 

@@ -38,9 +38,9 @@ public class BitmapBasedFilterOperator extends BaseFilterOperator {
   private final boolean _exclusive;
   private final int _numDocs;
 
-  BitmapBasedFilterOperator(PredicateEvaluator predicateEvaluator, DataSource dataSource, int numDocs) {
+  public BitmapBasedFilterOperator(PredicateEvaluator predicateEvaluator, InvertedIndexReader invertedIndexReader, int numDocs) {
     _predicateEvaluator = predicateEvaluator;
-    _invertedIndexReader = dataSource.getInvertedIndex();
+    _invertedIndexReader = invertedIndexReader;
     _docIds = null;
     _exclusive = predicateEvaluator.isExclusive();
     _numDocs = numDocs;

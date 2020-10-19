@@ -65,7 +65,7 @@ public class FilterOperatorUtils {
         return new SortedIndexBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
       }
       if (dataSource.getInvertedIndex() != null) {
-        return new BitmapBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
+        return new BitmapBasedFilterOperator(predicateEvaluator, dataSource.getInvertedIndex(), numDocs);
       }
       return new ScanBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
     }

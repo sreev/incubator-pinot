@@ -28,7 +28,7 @@ import org.apache.pinot.core.query.request.context.ExpressionContext;
  */
 public interface Predicate {
   enum Type {
-    EQ, NOT_EQ, IN, NOT_IN, RANGE, REGEXP_LIKE, TEXT_MATCH, IS_NULL, IS_NOT_NULL;
+    EQ, NOT_EQ, IN, NOT_IN, RANGE, REGEXP_LIKE, TEXT_MATCH, IS_NULL, IS_NOT_NULL, JSON_MATCH;
 
     public boolean isExclusive() {
       return this == NOT_EQ || this == NOT_IN || this == IS_NOT_NULL;
@@ -44,4 +44,5 @@ public interface Predicate {
    * Returns the left-hand side expression of the predicate.
    */
   ExpressionContext getLhs();
+
 }

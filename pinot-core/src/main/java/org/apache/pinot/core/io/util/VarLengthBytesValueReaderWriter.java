@@ -18,6 +18,9 @@
  */
 package org.apache.pinot.core.io.util;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.util.Arrays;
 import org.apache.pinot.common.utils.StringUtil;
 import org.apache.pinot.core.segment.memory.PinotDataBuffer;
@@ -63,19 +66,19 @@ public class VarLengthBytesValueReaderWriter implements ValueReader {
   /**
    * Magic bytes used to identify the dictionary files written in variable length bytes format.
    */
-  private static final byte[] MAGIC_BYTES = StringUtil.encodeUtf8(".vl;");
+  public static final byte[] MAGIC_BYTES = StringUtil.encodeUtf8(".vl;");
 
   /**
    * Increment this version if there are any structural changes in the store format and
    * deal with backward compatibility correctly based on old versions.
    */
-  private static final int VERSION = 1;
+  public static final int VERSION = 1;
 
   // Offsets of different fields in the header. Having as constants for readability.
-  private static final int VERSION_OFFSET = MAGIC_BYTES.length;
-  private static final int NUM_ELEMENTS_OFFSET = VERSION_OFFSET + Integer.BYTES;
-  private static final int DATA_SECTION_OFFSET_POSITION = NUM_ELEMENTS_OFFSET + Integer.BYTES;
-  private static final int HEADER_LENGTH = DATA_SECTION_OFFSET_POSITION + Integer.BYTES;
+  public static final int VERSION_OFFSET = MAGIC_BYTES.length;
+  public static final int NUM_ELEMENTS_OFFSET = VERSION_OFFSET + Integer.BYTES;
+  public static final int DATA_SECTION_OFFSET_POSITION = NUM_ELEMENTS_OFFSET + Integer.BYTES;
+  public static final int HEADER_LENGTH = DATA_SECTION_OFFSET_POSITION + Integer.BYTES;
 
   private final PinotDataBuffer _dataBuffer;
 
@@ -142,6 +145,19 @@ public class VarLengthBytesValueReaderWriter implements ValueReader {
     }
 
     return false;
+  }
+
+  public static byte[] getHeaderBytes(int numElements)
+      throws IOException {
+
+    ByteArrayOutputStream out = new ByteArrayOutputStream(HEADER_LENGTH);
+    DataOutputStream dos = new DataOutputStream(out);
+    dos.write(MAGIC_BYTES);
+    dos.writeInt(VERSION);
+    dos.writeInt(numElements);
+    dos.writeInt(HEADER_LENGTH);
+    dos.close();
+    return out.toByteArray();
   }
 
   private void writeHeader() {
